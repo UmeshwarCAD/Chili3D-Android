@@ -1,0 +1,105 @@
+name: Chili3D Android Offline APK
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: chili3d/package.json
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Clone and Build Chili3D
+        run: |
+          git clone https://github.com/xiangechen/chili3d.git
+          cd chili3d
+          npm i
+          npm run build
+          echo "Chili3D built"
+          ls -lh dist/ || ls -lh build/ || ls -lh
+
+      - name: Create Capacitor Android Wrapper
+        run: |
+          npm install -g @capacitor/cli
+          mkdir chili3d-android && cd chili3d-android
+          npm init -y
+          npm install @capacitor/core @capacitor/android @capacitor/cli
+
+          # Init capacitor
+          npx cap init UmeshwarChili3D com.umeshwarcad.chili3d --web-dir=www
+
+          # Copy Chili3D build to www
+          rm -rf www
+          if [ -d../chili3d/dist ]; then cp -r../chili3d/dist./www
+          elif [ -d../chili3d/build ]; then cp -r../chili3d/build./www
+          else mkdir www && cp -r../chili3d/* www/ || true
+          fi
+
+          # Add PWA offline service worker for offline use
+          cat > www/manifest.json << 'JSON'
+          {
+            "name": "UmeshwarCAD Chili3D",
+            "short_name": "UmeshwarCAD",
+            "start_url": "./",
+            "display": "standalone",
+            "background_color": "#1a1a1a",
+            "theme_color": "#0080ff",
+            "icons": [{"src":"icon.png","sizes":"512x512","type":"image/png"}]
+          }
+          JSON
+
+          cat > www/sw.js << 'JS'
+          self.addEventListener('install', e=>{self.skipWaiting()});
+          self.addEventListener('fetch', e=>{e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)).catch(()=>caches.match('./')))});
+          JS
+
+          ls -lh www/ | head -20
+
+          # Add Android platform
+          npx cap add android
+
+          # Configure for offline - allow file access
+          cat > capacitor.config.json << 'CAP'
+          {
+            "appId": "com.umeshwarcad.chili3d",
+            "appName": "UmeshwarCAD 3D",
+            "webDir": "www",
+            "server": {"androidScheme": "https"},
+            "android": {"allowMixedContent": true}
+          }
+          CAP
+
+          # Patch Android manifest for offline & storage
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:allowBackup="true"/android:allowBackup="true" android:usesCleartextTraffic="true"/' $MANIFEST || true
+
+          echo "Capacitor project ready"
+
+      - name: Build APK
+        run: |
+          cd chili3d-android
+          cd android
+          chmod +x gradlew
+         ./gradlew assembleDebug --stacktrace
+          find. -name "*.apk" -type f -exec ls -lh {} \;
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UmeshwarCAD-Chili3D-Offline-APK
+          path: chili3d-android/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
